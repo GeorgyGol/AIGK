@@ -8,6 +8,7 @@
 
     * seasonal_decompose - returns the trend, wave, error and row, cleared from outliers
     * test - retrun pandas DataFrame with seasonal_decompose of testing row
+    * neighbours - return cnt_of_neiboors from left-right for cur_index in array
 
 """
 
@@ -22,10 +23,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import math
-from scipy import stats
+from scipy import stats as st
 
 
-class _SeasonWave():
+def neighbours(ar, cur_index, cnt_of_neiboors=3, exclude_from_neibors_index=[]):
+    """return cnt_of_neiboors from left-right for cur_index in array ar, with exclude some indexes"""
+    rmax = np.max([0, cur_index + cnt_of_neiboors - len(ar)])
+    lmin = np.max([cur_index - (cnt_of_neiboors + rmax), 0])
+
+    excl = set(exclude_from_neibors_index) | {cur_index}
+    nbs = [i for i in range(lmin, len(ar)) if i not in excl]
+    return ar[nbs[:cnt_of_neiboors * 2]]
+
+
+def as_matrix(row, period, fill_val=np.nan):
+    offs=period - len(row) % period
+    # kper = len(row) // period + int(offs>0)
+    offs = 0 if offs==period else offs
+    wr=np.append(np.asarray(row, dtype='float'), [fill_val]*offs)
+
+    wr=np.reshape(wr, (-1, period))
+    return wr
+
+class __SeasonWave():
     _row=None
     _period=12
     _static=1
@@ -48,14 +68,27 @@ class _SeasonWave():
 
     def var_trend(self, row):
         return sum([(row[i + 2] - 2 * row[i + 1] + row[i]) ** 2 for i in range(len(row) - 2)]) / len(row)
-        # return np.var(row, ddof=0)
+
+    def var_trend1(self, row):
+        # mtr=as_matrix(row, self._period)
+        # err=np.nanmean(np.nanstd(mtr, axis=0))
+        err=np.nanstd(row)
+        return err
 
     def var_wave(self, row, period):
         SumW = 0
-        for i in range(self._period):
-            for k in range(row.size // self._period - 1):
-                SumW += (row[(k + 1) * self._period + i] - row[k * self._period + i]) ** 2
-        return SumW / len(row)
+        for i in range(period):
+            for k in range(1, self.kper - 1):
+                # SumW += (row[(k + 1) * self._period + i] - row[k * self._period + i]) ** 2
+                SumW+= (row[k * period + i] ** 2) - row[(k-1)*period+1]
+        for i in range(period):
+            SumW+=row[(self.kper-1)*period+i]**2 - row[(self.kper-2)*period+i]
+        return SumW / (period*(self.kper-1)+period)
+
+    def var_wave1(self, row):
+        mtr=as_matrix(row, self._period)
+        err=np.nanmean(np.nanstd(mtr, axis=1, ddof=1))#/mtr.shape[0]
+        return err
 
     def _input_model(self, row):
         if self._model[:3].lower()=='add':
@@ -70,7 +103,8 @@ class _SeasonWave():
             return self._row - wave, wave, self._row
 
         elif self._model[:4] == 'mult':
-            return np.exp(self._row - wave), np.exp(wave), np.exp(self._row)
+            outr=np.exp(self._row - wave)
+            return outr, np.exp(self._row)-outr, np.exp(self._row)
         else:
             raise TypeError('sesonal decompose model undefined')
 
@@ -85,14 +119,41 @@ class _SeasonWave():
         return np.linalg.inv(np.array(res))
 
     def _calc_sec_diff(self, row):
-        res = np.zeros((len(row) // self._period, self._period))
-        src = np.append(row, [row[-1], np.nan])
+        def calc(i, rw):
+            x = np.roll(rw, shift=-i)
+            return x[0] - 2 * x[1] + x[2]
 
-        for k in range(res.shape[0]):
-            res[k, :] = [src[i + k * self._period] - (2 * src[i + 1 + k * self._period]) + src[i + 2 + k * self._period] for i in
-                         range(self._period)]
+        plp = row[-1] * (row[-self._period] / row[-self._period - 1])
+        lp = plp * (row[-self._period + 1] / row[-self._period])
+
+        src = np.append(row, [plp, lp])
+
+        res = np.asarray([calc(i, src) for i in range(len(self._row))][:self.kper*self._period])
+        res = res.reshape((self.kper, self.period))
         res[:, -1] = 0
         return res
+
+        # res = np.zeros((len(row) // self._period, self._period))
+        # # plp=row[-self._period] + (row[-self._period] / row[-self._period * 2])
+        # plp = row[-1] * (row[-self._period] / row[-self._period -1])
+        # lp = plp*(row[-self._period+1] / row[-self._period])
+        # # src = np.append(row, [row[-2], row[-1]])
+        # # src = np.append(row, [np.mean( (row[-2], row[-self._period-2])), np.mean( (row[-1], row[-self._period-1]) )])
+        # src = np.append(row, [plp, lp])
+        #
+        # # src = np.append(row, [row[-1], np.nan])
+        # # src = np.append(row, [0, 0])
+        #
+        # # mtr=[x[0]-2*x[1]+x[2] for x in np.roll()]
+        #
+        # for k in range(res.shape[0]):
+        #     res[k, :] = [src[i + k * self._period] - (2 * src[i + 1 + k * self._period]) + src[i + 2 + k * self._period] for i in
+        #                  range(self._period)]
+        # res[:, -1] = 0
+        # return res
+
+    # def calc_sec_diff(self, row):
+    #     return self._calc_sec_diff(row)
 
     def _norm_vect(self, cnt_periods, gamma):
         return np.array([(1 - gamma) / (1 + gamma - gamma ** k - gamma ** (cnt_periods - k + 1)) for k in
@@ -103,12 +164,27 @@ class _SeasonWave():
         m_dif2=self._calc_sec_diff(row)
         d_ = np.zeros((m_dif2.shape[1], m_dif2.shape[0]))
 
-        v_weight = self._norm_vect(m_dif2.shape[1], gamma)
+        v_weight = self._norm_vect(m_dif2.shape[0], gamma)
+
+        # For k: = 1 To kper do
+        #     begin
+        #         For j: = 1  To lPeriod do
+        #             begin
+        #                 ds_: = 0;
+        #                 For L: = 1 To kper do // Взвешивание
+        #                     ds_: = ds_ + IntPower(g, Abs(k - L)) * del2[L, j];
+        #
+        #                 ds_: = ds_ * w[k];
+        #                 d_[j, k]: = ds_;
+        #             end;
+        #     end;
+
 
         for k in range(m_dif2.shape[0]):
             for j in range(m_dif2.shape[1]):
-                ds_ = np.sum([gamma ** (abs(k - l)) * m_dif2[l, j] for l in range(m_dif2.shape[0])])
-                d_[j, k] = ds_ * v_weight[j]
+                # ds_ = np.sum([gamma ** (abs(k - L)) * m_dif2[L, j] for L in range(m_dif2.shape[0])])
+                ds_ = np.sum([(gamma ** (abs(k - L))) * m_dif2[L, j] for L in range(m_dif2.shape[0])])
+                d_[j, k] = ds_ * v_weight[k]
         return d_
 
     def _get_wave(self, row, gamma):
@@ -158,13 +234,75 @@ class _SeasonWave():
         return self._output_model(wave)
 
     def Err_X4(self, trend, wave):
-        return self.var_trend(trend) * (-0.5 * self._static + 0.5) + (0.5 * self._static + 0.5) * self.var_wave(wave, self._period)
+        # return self.var_trend(trend) * (-0.5 * self._static + 0.5) + (0.5 * self._static + 0.5) * self.var_wave(wave, self._period)
+        # return self.var_trend1(trend) * (-0.5 * self._static + 0.5) + (0.5 * self._static + 0.5) * self.var_wave1(wave)
+        # err=[self.var_trend1(trend), self.var_wave1(wave)]
+        # print(self._static, err[0], err[1], err[0]*(1-self._static)+err[1]*self._static)
+        return self.var_trend1(trend)*(1-self._static) + self.var_wave1(wave)*self._static
+
+        # return self.var_trend1(trend) * (-0.5 * self._static + 0.5) + (0.5 * self._static + 0.5) * self.var_wave1(wave)
 
     def Variance(self, gamma):
         trend, wave, _ = self.seasX4(gamma)
         return self.Err_X4(trend, wave)
 
-def seasonal_decompose(row, period=12, gamma=0.01, static=0.5, model='additive', precision=0.001):
+    def as_matrix(self, fill_val=np.nan):
+        # make periods-matrix from row
+        return as_matrix(self._row, self._period, fill_val=fill_val)
+
+    def from_matrix(self, src_matrix):
+        """very dangerous, must be hiden from outside, using only in seasonal_decompose function"""
+        self._row=src_matrix.ravel()[:len(self._row)]
+        return self._row
+
+    def outliers_zscore_find(self, src_matrix, pers_minmax_trim=0.2, level_zscore=2.0):
+        """find outliers in source time series transformed to period matrix by z-score, return 2D array of indexes"""
+
+        # calc z-score between periods and inside periods
+
+        zscore0 = np.transpose((np.transpose(src_matrix) - st.trim_mean(src_matrix, pers_minmax_trim, axis=1)) / np.mean(
+            np.nanstd(src_matrix, axis=1)))
+        zscore1 = (src_matrix - st.trim_mean(src_matrix, pers_minmax_trim, axis=0)) / np.mean(np.nanstd(src_matrix, axis=0))
+
+        np.warnings.filterwarnings('ignore')
+        x0 = np.abs(zscore0) > level_zscore
+        x1 = np.abs(zscore1) > level_zscore
+        np.warnings.filterwarnings('default')
+
+        result = np.where(x0 & x1)
+        return list(zip(result[0], result[1]))
+
+    def correction_outliers(self, src_matrix, outliers_indexes, corr_by_neibs=3, axis=1):
+        """коррекция по соседним точкам периода или через период"""
+        def linear_correction(row, outliers_indexes, corr_by_neibs=3):
+            """correct outliers by row neiboors"""
+            lcor = np.asarray([neighbours(row, i, cnt_of_neiboors=corr_by_neibs,
+                                          exclude_from_neibors_index=outliers_indexes) for i in outliers_indexes])
+            for i in range(len(outliers_indexes)):
+                row[outliers_indexes[i]] = np.nanmean(lcor[i])
+            return row
+
+        if axis==1:
+            lst_res = []
+            for i in range(src_matrix.shape[axis]):
+                ind=[k[0] for k in outliers_indexes if k[1]==i]
+                lst_res.append( linear_correction(src_matrix[:, i], ind, corr_by_neibs=corr_by_neibs))
+            return np.transpose(np.asarray(lst_res))
+        elif axis==0:
+            lstOut=[y[0] * self.period + y[1] for y in outliers_indexes]
+            return linear_correction(self._row, lstOut, corr_by_neibs=corr_by_neibs)
+        else:
+            # by row neiboors, but with period conuting
+            # for i in range(src_matrix.shape[axis]):
+            #     ind=[k[1] for k in outliers_indexes if k[0]==i]
+            #     lst_res.append( linear_correction(src_matrix[i, :], ind, corr_by_neibs=corr_by_neibs))
+            # return np.asarray(lst_res)
+            raise(NameError('Correction type not defined'))
+
+def seasonal_decompose(row, period=12, gamma=2, static=0.5, model='additive', precision=0.001,
+                       row_correction=False, correction_axis=0, correction_zlevel=2, correction_trimm=0.2,
+                       correction_fill_val=np.nan, correction_neiboors=2):
+
     """Detachmentt of the seasonal components of the time series
         params: row - source row - time series, 1D numpy.array
                 periods - points in one period
@@ -172,13 +310,24 @@ def seasonal_decompose(row, period=12, gamma=0.01, static=0.5, model='additive',
                 static - if =1 the wave will be static, if = 0 - wave will be dynamic, between 0 and 1 - partial static
                 model - 'additive' aor 'multiplicative', define wave model
                 precision -  precision for gamma calculation if gamma calculating itself
+                row_correction - if True make outliers row correction
+                correction_axis - find outliers and correct: 0 - by flat row, 1 - by inter-period
+                correction_zlevel - z-score level for outlier point
+                correction_trimm - exclude min-max pointer from find correction alg., in percent
+                correction_fill_val - fill row with this value for make matrix
+                correction_neiboors - correct ouliers by neiboors's mean, this param - count for used neiboors
+                pow_weight - power wight, more 1 - smoother trend
 
-        return: trend, wave, variance (error), cleared source row
+        return: trend, wave, variance (error), corrected source row
                 variance (error) - scalar, trend, wave and row - numpy 1D arrays
 
         example: trend, wave, err, out_row = seasonal_decompose(row, period=12, gamma=2, static=0.1, model='add')
     """
-    x=_SeasonWave(row, period=period, static=static, model=model)
+    x=__SeasonWave(row.copy(), period=period, static=static, model=model)
+    if row_correction:
+        xmtr = x.as_matrix(fill_val=correction_fill_val)
+        out_indexes=x.outliers_zscore_find(xmtr, pers_minmax_trim=correction_trimm, level_zscore=correction_zlevel)
+        x.from_matrix(x.correction_outliers(xmtr,  out_indexes,  corr_by_neibs=correction_neiboors, axis=correction_axis))
 
     if 0 < gamma <= 1:
         trend, wave, out_row = x.seasX4(gamma)
@@ -220,21 +369,56 @@ def test():
     #                 339.8, 346.5, 350.2, 342.5, 367.4, 357.5, 373.9, 362.3, 345.4, 376.6, 367.1, 371.6, 357.8, 366.1,
     #                 373.1, 366.1, 380.2, 375.7325, 386.6126) ) #np.around(np.random.random(24), 2)
 
-    inp = np.array((305.6, 296.6, 286.1, 303.4, 287.5, 293.4, 286.2, 292, 290, 285.8, 307.8, 302.1,
-                    311, 301, 280.7, 311, 299.1, 307.7, 297.3, 299.4, 302.5, 299.9, 326.9, 313.7, 311.3, 311.4, 297.9,
-                    328, 315.6, 323.5, 312, 321.3, 321.7, 322, 341.7, 331.2, 341.7, 340.2, 315.7, 353.1, 336.5, 347.7,
-                    339.8, 346.5, 350.2, 342.5, 367.4, 357.5, 373.9, 362.3, 345.4, 376.6, 367.1, 371.6, 357.8, 366.1,
-                    373.1, 366.1, 380.2, 375.7325, 386.6126))  # np.around(np.random.random(24), 2)
+    inp = np.array((305.6, 396.6, 386.1, 303.4, 487.5, 293.4, 286.2, 292, 290, 285.8, 307.8, 302.1,
+                     211, 301, 280.7, 311, 299.1, 307.7, 297.3, 299.4, 302.5, 299.9, 326.9, 313.7, 311.3, 311.4, 297.9,
+                     328, 315.6, 323.5, 212, 321.3, 221.7, 322, 341.7, 331.2, 341.7, 340.2, 315.7, 353.1, 336.5, 347.7,
+                     339.8, 346.5, 550.2, 342.5, 367.4, 357.5, 373.9, 362.3, 345.4, 376.6, 367.1, 371.6, 357.8, 366.1,
+                     373.1, 366.1, 380.2, 375.7325, 386.6126) )  # np.around(np.random.random(24), 2)
 
-    np.set_printoptions(precision=3, suppress=True)
+    np.set_printoptions(precision=3, suppress=True, linewidth =110)
     row = inp[:-2]
-    trend, wave, err, out_row = seasonal_decompose(row, period=12, gamma=2, static=0.1, model='add')
-    pdf = pd.DataFrame({'row': out_row, 'wave': wave, 'trend': trend})
+    trend, wave, err, out_row = seasonal_decompose(row.copy(), period=12, gamma=2, static=0, model='add',
+                                                   correction_zlevel=1.1,
+                                                   row_correction=True, correction_axis=1, correction_neiboors=3)
+    pdf = pd.DataFrame({'row': row, 'wave': wave, 'trend': trend, 'corr_row':out_row})
 
     return pdf
 
 
 if __name__ == "__main__":
+    inp = np.array((305.6, 296.6, 286.1, 303.4, 287.5, 293.4, 286.2, 292, 290, 285.8, 307.8, 302.1,
+                    311, 301, 380.7, 311, 199.1, 307.7, 297.3, 299.4, 302.5, 299.9, 326.9, 113.7, 311.3, 311.4, 97.9,
+                    328, 315.6, 323.5, 312, 321.3, 321.7, 322, 341.7, 331.2, 341.7, 340.2, 315.7, 353.1, 336.5, 347.7,
+                    139.8, 346.5, 350.2, 142.5, 0, 357.5, 373.9, 362.3, 345.4, 376.6, 367.1, 371.6, 357.8, 366.1,
+                    373.1, 366.1, 380.2, 375.7325, 386.6126))  # np.around(np.random.random(24), 2)
+
+    def calc(i):
+        x=np.roll(inp, shift=-i)
+        return x[0]-2*x[1]+x[2]
+
+    np.set_printoptions(precision=3, suppress=True, linewidth =110)
+
+
+    # x = __SeasonWave(inp, period=12, static=0.1, model='add')
+    #
+    # plp = inp[-1] * (inp[-x.period] / inp[-x.period - 1])
+    # lp = plp * (inp[-x.period + 1] / inp[-x.period])
+    #
+    # inp=np.append(inp, [plp, lp])
+    #
+    # print(inp)
+    #
+    # mtr=np.asarray([calc(i) for i in range(len(inp))][:60])
+    # mtr=mtr.reshape( (x.kper, x.period) )
+    # mtr[:, -1]=0
+    # print(mtr)
+    # xm=x.calc_sec_diff(inp)
+    # print(xm)
+    #
+    # x = _SeasonWave(inp, period=12, static=0.1, model='add')
+    # print(x.row)
+    # xmtr=x.as_matrix()
+    # print(xmtr)
 
     p=test()
 

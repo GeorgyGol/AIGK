@@ -1,24 +1,25 @@
 import pandas as pd
 import datetime as dt
-from os import path
+# from os import path
 import re
-import sqlite3
+# import sqlite3
 import sqlalchemy as sa
 from need_funcs import pandas_sql
 from need_funcs.season import seasonal_decompose
+from database.paths import *
 
 import warnings
 warnings.filterwarnings('ignore')
 
-strBaseFile=r'База данных.xlsm'
-strBasePath='..'
-
-strSQL_path=path.join(strBasePath, 'DB')
-strSQL_y='year.sqlite3'
-strSQL_q='quar.sqlite3'
-strSQL_m='month.sqlite3'
-strGroupHeadKey='MGH'
-strGroupField='mgroup_id'
+# strBaseFile=r'База данных.xlsm'
+# strBasePath='..'
+#
+# strSQL_path=path.join(strBasePath, 'DB')
+# strSQL_y='year.sqlite3'
+# strSQL_q='quar.sqlite3'
+# strSQL_m='month.sqlite3'
+# strGroupHeadKey='MGH'
+# strGroupField='mgroup_id'
 
 def set_group_key(pdf, grp_mask):
     """определяет заголовки групп (главных) по маске, расставляет ключи этих групп остальным рядам"""
@@ -42,7 +43,7 @@ def read_main_file(strFile=path.join(strBasePath, strBaseFile),
 
     def year_sheet(if_exists='upsert'):
         def data_work(dtf_data):
-            pdfd_sql = dtf_data.stack().reset_index().rename(columns={'level_1': 'year', 0: 'value'})
+            pdfd_sql = dtf_data.stack().reset_index().rename(columns={'level_1': 'date', 0: 'value'})
             pds = pandas_sql.DataFrameDATA(pdfd_sql.loc[~pdfd_sql['code'].isin(lstCalcF)].set_index(['code', 'year']))
             pds.to_sql('datas', con=coni_y, if_exists=if_exists)
             return pds
@@ -52,6 +53,7 @@ def read_main_file(strFile=path.join(strBasePath, strBaseFile),
 
             pdfRowHead = set_group_key(pdfRowHead, mskMainGroup)
             pds=pandas_sql.DataFrameDATA(pdfRowHead)
+            pds['params']=''
             pds.to_sql('headers', con=coni_y, if_exists=if_exists)
             return pds
 
@@ -79,7 +81,7 @@ def read_main_file(strFile=path.join(strBasePath, strBaseFile),
         def header_work(dtf_head):
             pdfRowHead = set_group_key(dtf_head, mskGroupHead)
             pds=pandas_sql.DataFrameDATA(pdfRowHead)
-
+            pds['params']=''
             pds.to_sql('headers', con=sql_conn, if_exists=if_exists)
             return pds
 
@@ -113,8 +115,8 @@ def read_main_file(strFile=path.join(strBasePath, strBaseFile),
         # print(pdfDB[~mskCalculated])
         # print(pdfDB)
 
-    # year_sheet()
-    # quar_sheet()
+    year_sheet()
+    quar_sheet()
     quar_sheet(sheet_name='MONTH', sql_conn=coni_m) # monthly sheet
 
 
@@ -124,7 +126,7 @@ def main():
     print(path.exists(path.join(strBasePath, strBaseFile)))
 
 if __name__ == "__main__":
-    #read_main_file()
-    print(help(seasonal_decompose))
+    read_main_file()
+
 
     print('All done')
